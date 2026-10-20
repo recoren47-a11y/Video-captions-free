@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="ur">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Caption Studio</title>
+<style>
+:root{--bg:#f6f7f4;--card:#fff;--ink:#1d2320;--mute:#5e6a64;--line:#d9dfda;--accent:#1f7a5c;--accent-ink:#fff}
+@media (prefers-color-scheme:dark){:root{--bg:#121614;--card:#1b211e;--ink:#e8ede9;--mute:#9aa7a0;--line:#2e3833;--accent:#3fb88c;--accent-ink:#06130d}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:16px;max-width:720px;margin-inline:auto}
+h1{font-size:1.6rem;margin:8px 0 4px}
+p.sub{color:var(--mute);margin:0 0 16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:14px}
+label{display:block;font-size:.9rem;color:var(--mute);margin:8px 0 4px}
+select,input[type=file],textarea,input[type=text]{width:100%;font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px}
+button{font:inherit;font-weight:600;background:var(--accent);color:var(--accent-ink);border:0;border-radius:8px;padding:12px 16px;width:100%;margin-top:10px}
+button.alt{background:transparent;color:var(--ink);border:1px solid var(--line)}
+button:disabled{opacity:.5}
+:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.stage{position:relative}
+video{width:100%;border-radius:10px;background:#000;max-height:50vh}
+#overlay{position:absolute;left:8px;right:8px;bottom:44px;text-align:center;color:#fff;font-weight:700;text-shadow:0 0 4px #000,0 0 4px #000;pointer-events:none}
+.row{border-top:1px solid var(--line);padding:10px 0}
+.row .t{display:flex;gap:8px}
+.row .t input{width:50%}
+.row textarea{margin-top:6px;min-height:60px}
+#status{color:var(--mute);font-size:.9rem;margin-top:8px;min-height:1.4em}
+progress{width:100%;margin-top:8px}
+</style>
+</head>
+<body>
+<h1>Caption Studio</h1>
+<p class="sub">Video chuno, captions auto banao, text edit karo, SRT download karo. Sab kuch aapke phone ke andar chalta hai.</p>
+
+<div class="card">
+  <label for="file">Video file</label>
+  <input id="file" type="file" accept="video/*,audio/*">
+  <label for="lang">Zabaan</label>
+  <select id="lang">
+    <option value="urdu">Urdu</option>
+    <option value="hindi">Hindi</option>
+    <option value="english">English</option>
+    <option value="">Auto detect</option>
+  </select>
+  <label for="model">Quality</label>
+  <select id="model">
+    <option value="Xenova/whisper-tiny">Tez (tiny, ~40 MB)</option>
+    <option value="Xenova/whisper-base" selected>Behtar (base, ~80 MB)</option>
+  </select>
+  <button id="go" disabled>Captions banao</button>
+  <progress id="bar" value="0" max="100" hidden></progress>
+  <div id="status" role="status"></div>
+</div>
+
+<div class="card" id="editor" hidden>
+  <div class="stage">
+    <video id="vid" controls playsinline></video>
+    <div id="overlay"></div>
+  </div>
+  <div id="list"></div>
+  <button id="dl">SRT download karo</button>
+  <button id="dltxt" class="alt">Sirf text download karo</button>
+</div>
+
+<script type="module">
+import { pipeline } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.2";
+
+const $ = id => document.getElementById(id);
+let file = null, caps = [];
+
+$("file").addEventListener("change", e => {
+  file = e.target.files[0];
+  $("go").disabled = !file;
+  if (file) { $("vid").src = URL.createObjectURL(file); }
+});
+
+const status = t => $("status").textContent = t;
+
+async function getAudio(f) {
+  const buf = await f.arrayBuffer();
+  const ctx = new AudioContext({ sampleRate: 16000 });
+  const audio = await ctx.decodeAudioData(buf);
+  return audio.getChannelData(0);
+}
+
+$("go").addEventListener("click", async () => {
+  $("go").disabled = true;
+  $("bar").hidden = false;
+  try {
+    status("Model download ho raha hai (pehli baar thora time lagta hai)...");
+    const asr = await pipeline("automatic-speech-recognition", $("model").value, {
+      progress_callback: p => { if (p.progress) $("bar").value = p.progress; }
+    });
+    status("Awaz nikali ja rahi hai...");
+    const audio = await getAudio(file);
+    status("Captions ban rahe hain... screen band na karein.");
+    $("bar").removeAttribute("value");
+    const opts = { return_timestamps: true, chunk_length_s: 30, stride_length_s: 5 };
+    if ($("lang").value) { opts.language = $("lang").value; opts.task = "transcribe"; }
+    const out = await asr(audio, opts);
+    caps = (out.chunks || []).map(c => ({
+      s: c.timestamp[0] ?? 0,
+      e: c.timestamp[1] ?? (c.timestamp[0] + 2),
+      t: c.text.trim()
+    }));
+    render();
+    status("Taiyar! Neeche text edit kar sakte hain.");
+  } catch (err) {
+    status("Masla aaya: " + err.message + ". Choti video ya 'Tez' quality try karein.");
+  }
+  $("bar").hidden = true;
+  $("go").disabled = false;
+});
+
+function render() {
+  $("editor").hidden = false;
+  const list = $("list");
+  list.innerHTML = "";
+  caps.forEach((c, i) => {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML = `<div class="t"><input type="text" inputmode="decimal" aria-label="Start (sec)"><input type="text" inputmode="decimal" aria-label="End (sec)"></div><textarea aria-label="Caption text"></textarea>`;
+    const [si, ei] = row.querySelectorAll("input");
+    const ta = row.querySelector("textarea");
+    si.value = c.s.toFixed(1); ei.value = c.e.toFixed(1); ta.value = c.t;
+    si.oninput = () => c.s = parseFloat(si.value) || 0;
+    ei.oninput = () => c.e = parseFloat(ei.value) || 0;
+    ta.oninput = () => c.t = ta.value;
+    ta.onfocus = () => { $("vid").currentTime = c.s; };
+    list.appendChild(row);
+  });
+}
+
+$("vid").addEventListener("timeupdate", () => {
+  const t = $("vid").currentTime;
+  const c = caps.find(x => t >= x.s && t <= x.e);
+  $("overlay").textContent = c ? c.t : "";
+});
+
+const pad = (n, l = 2) => String(Math.floor(n)).padStart(l, "0");
+function ts(sec) {
+  const h = sec / 3600, m = (sec % 3600) / 60, s = sec % 60;
+  return `${pad(h)}:${pad(m)}:${pad(s)},${pad((sec % 1) * 1000, 3)}`;
+}
+function save(name, text, type) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type }));
+  a.download = name;
+  a.click();
+}
+$("dl").onclick = () => save("captions.srt",
+  caps.map((c, i) => `${i + 1}\n${ts(c.s)} --> ${ts(c.e)}\n${c.t}\n`).join("\n"), "text/plain");
+$("dltxt").onclick = () => save("captions.txt", caps.map(c => c.t).join("\n"), "text/plain");
+</script>
+</body>
+</html>
